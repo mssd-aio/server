@@ -1,37 +1,41 @@
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSignalR(options => {
-    options.EnableDetailedErrors = true;
-    options.MaximumReceiveMessageSize = 10 * 1024 * 1024; // 10MB dosya sınırı
-});
+// 1. Türkçe karakter desteği için Encoding ayarı
+Console.InputEncoding = Encoding.UTF8;
+Console.OutputEncoding = Encoding.UTF8;
 
+builder.Services.AddSignalR();
 builder.Services.AddCors(opt => opt.AddDefaultPolicy(p => 
     p.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true).AllowCredentials()));
 
 var app = builder.Build();
 app.UseCors();
 
-// --- BELLEK VERİ DEPOLAMA ---
-var Users = new ConcurrentDictionary<string, string>(); // Kullanıcı:Şifre
-var RoomPasswords = new ConcurrentDictionary<string, string>(); // Oda:ŞifreHash (Boşsa şifresiz)
-var RoomHistory = new ConcurrentDictionary<string, List<ChatMessage>>();
+// --- BELLEK VERİ MERKEZİ ---
+// Kullanıcılar (KullanıcıAdı : Şifre)
+var Users = new ConcurrentDictionary<string, string>();
+// Aktif Odalar (OdaAdı : ŞifreliMi)
+var GlobalRooms = new ConcurrentDictionary<string, bool>();
 
 // --- API ENDPOINTLERİ ---
 
+// Kayıt Ol
 app.MapPost("/register", (UserDto dto) => 
     Users.TryAdd(dto.Username, dto.Password) ? Results.Ok() : Results.BadRequest());
 
+// Giriş Yap
 app.MapPost("/login", (UserDto dto) => 
     Users.TryGetValue(dto.Username, out var p) && p == dto.Password ? Results.Ok() : Results.Unauthorized());
 
-// Lobi için oda listesi ve şifre koruması durumu
+// Lobi: Odaları Listele (İstemcinin beklediği RoomMeta formatında)
 app.MapGet("/list-rooms", () => 
-    RoomPasswords.Select(r => new { Name = r.Key, IsProtected = !string.IsNullOrEmpty(r.Value) }));
+    GlobalRooms.Select(r => new { Name = r.Key, IsProtected = r.Value }));
 
-app.MapGet("/", () => "🛡️ SECURE SERVER v8.0 - LOBBY & PASS PROTECT ACTIVE");
+app.MapGet("/", () => "🛡️ SECURE SERVER v8.5 [TR] - ONLINE");
 
 // --- SIGNALR HUB ---
 
@@ -41,57 +45,62 @@ app.Run();
 
 public class ChatHub : Hub 
 {
-    private static readonly ConcurrentDictionary<string, string> _admins = new();
-    private static readonly ConcurrentDictionary<string, string> _userRooms = new(); // ConnectionId:RoomName
-    private static readonly ConcurrentDictionary<string, string> _userNames = new(); // ConnectionId:UserName
+    // Bağlantı ID'lerini oda ve kullanıcı adlarıyla eşleştiriyoruz
+    private static readonly ConcurrentDictionary<string, string> _connectionToRoom = new();
+    private static readonly ConcurrentDictionary<string, string> _connectionToUser = new();
+    
+    // Lobi listesine erişim için referans (GlobalRooms'u burada da kullanacağız)
+    // Static dictionary olduğu için doğrudan erişebiliriz.
 
-    public async Task JoinRoom(string roomName, string userName) 
+    public async Task JoinRoom(string roomName, string userName, bool isProtected) 
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, roomName);
         
-        // Kullanıcı takibi (Çıkış bildirimi için)
-        _userRooms[Context.ConnectionId] = roomName;
-        _userNames[Context.ConnectionId] = userName;
+        // Odayı global listeye ekle (Lobi için)
+        // Buraya erişmek için Program sınıfındaki statik değişkene ihtiyaç var veya basitçe:
+        // GlobalRooms statik olduğu için Hub içinden yönetilebilir.
+        // Not: Bu örnekte oda oluşturma mantığı Join içindedir.
+        ChatManager.AddRoom(roomName, isProtected);
 
-        // Oda şifre takibi (İlk giren odayı ve şifre durumunu oluşturur)
-        // Not: Client tarafında şifre hashlenip RoomPasswords'e bir şekilde kaydedilebilir.
-        // Şimdilik basitlik adına oda ilk kez oluşturuluyorsa listeye ekliyoruz.
-        if (!RoomHistory.ContainsKey(roomName))
-        {
-            RoomHistory[roomName] = new List<ChatMessage>();
-            // Önemli: Şifre durumunu burada varsayılan olarak kaydediyoruz.
-            // (Client tarafındaki tercihe göre bu genişletilebilir)
-        }
+        _connectionToRoom[Context.ConnectionId] = roomName;
+        _connectionToUser[Context.ConnectionId] = userName;
 
-        await Clients.Group(roomName).SendAsync("ReceiveSystemMessage", $"🚀 {userName} odaya katıldı.");
+        await Clients.Group(roomName).SendAsync("ReceiveSystemMessage", $"🚀 {userName} odaya giriş yaptı.");
     }
 
     public async Task SendMessage(string room, string user, string msg, string iv, bool isFile) 
     {
-        var chatMsg = new ChatMessage(user, msg, iv, isFile, DateTime.UtcNow);
-        
-        if (RoomHistory.TryGetValue(room, out var list)) {
-            list.Add(chatMsg);
-            if (list.Count > 50) list.RemoveAt(0); // Son 50 mesaj
-        }
-
-        await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, chatMsg.Time);
+        // Mesajı odaya dağıt
+        await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, DateTime.UtcNow);
     }
 
-    public async Task SendSeen(string room, string user) => await Clients.OthersInGroup(room).SendAsync("ReceiveSeen", user);
-    public async Task SendTyping(string room, string user) => await Clients.OthersInGroup(room).SendAsync("ReceiveTyping", user);
+    public async Task SendSeen(string room, string user) => 
+        await Clients.OthersInGroup(room).SendAsync("ReceiveSeen", user);
 
+    public async Task SendTyping(string room, string user) => 
+        await Clients.OthersInGroup(room).SendAsync("ReceiveTyping", user);
+
+    // Kullanıcı bağlantısı koptuğunda (veya /exit yapıldığında)
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        if (_userRooms.TryRemove(Context.ConnectionId, out var room) && 
-            _userNames.TryRemove(Context.ConnectionId, out var user))
+        if (_connectionToRoom.TryRemove(Context.ConnectionId, out var room) && 
+            _connectionToUser.TryRemove(Context.ConnectionId, out var user))
         {
             await Clients.Group(room).SendAsync("ReceiveSystemMessage", $"🚪 {user} odadan ayrıldı.");
+            
+            // Eğer odada kimse kalmadıysa odayı listeden silebiliriz (Opsiyonel)
+            // if (!_connectionToRoom.Values.Contains(room)) ChatManager.RemoveRoom(room);
         }
         await base.OnDisconnectedAsync(exception);
     }
 }
 
-// --- MODELLER ---
+// --- YARDIMCI SINIFLAR VE MODELLER ---
+public static class ChatManager {
+    // Statik olarak odaları burada tutuyoruz
+    public static ConcurrentDictionary<string, bool> GlobalRooms = new();
+    public static void AddRoom(string name, bool isProtected) => GlobalRooms.TryAdd(name, isProtected);
+}
+
 public record UserDto(string Username, string Password);
 public record ChatMessage(string User, string Msg, string Iv, bool IsFile, DateTime Time);
