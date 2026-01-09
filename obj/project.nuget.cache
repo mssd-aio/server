@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "dgSpecHash": "kEkGKchFu+0=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\kkumas\\Desktop\\ChatSistemi\\SecureChatServer\\SecureChatServer.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\kkumas\\.nuget\\packages\\microsoft.aspnetcore.signalr\\1.2.9\\microsoft.aspnetcore.signalr.1.2.9.nupkg.sha512",
+    "C:\\Users\\kkumas\\.nuget\\packages\\microsoft.entityframeworkcore\\10.0.1\\microsoft.entityframeworkcore.10.0.1.nupkg.sha512",
+    "C:\\Users\\kkumas\\.nuget\\packages\\microsoft.entityframeworkcore.abstractions\\10.0.1\\microsoft.entityframeworkcore.abstractions.10.0.1.nupkg.sha512",
+    "C:\\Users\\kkumas\\.nuget\\packages\\microsoft.entityframeworkcore.analyzers\\10.0.1\\microsoft.entityframeworkcore.analyzers.10.0.1.nupkg.sha512",
+    "C:\\Users\\kkumas\\.nuget\\packages\\microsoft.entityframeworkcore.inmemory\\10.0.1\\microsoft.entityframeworkcore.inmemory.10.0.1.nupkg.sha512"
+  ],
+  "logs": [
+    {
+      "code": "NU1510",
+      "level": "Warning",
+      "message": "PackageReference Microsoft.AspNetCore.SignalR ayıklanmayacak. Bu paketi bağımlılıklarınızdan kaldırmayı düşünün, çünkü muhtemelen gereksizdir.",
+      "projectPath": "C:\\Users\\kkumas\\Desktop\\ChatSistemi\\SecureChatServer\\SecureChatServer.csproj",
+      "warningLevel": 1,
+      "filePath": "C:\\Users\\kkumas\\Desktop\\ChatSistemi\\SecureChatServer\\SecureChatServer.csproj",
+      "libraryId": "Microsoft.AspNetCore.SignalR",
+      "targetGraphs": [
+        "net10.0"
+      ]
+    }
+  ]
+}
