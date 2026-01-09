@@ -1,42 +1,45 @@
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// 1. Gerekli Servisleri Ekle
-builder.Services.AddSignalR();
-builder.Services.AddCors(options => {
-    options.AddDefaultPolicy(policy => {
-        policy.AllowAnyHeader()
-              .AllowAnyMethod()
-              .SetIsOriginAllowed(_ => true)
-              .AllowCredentials();
-    });
+builder.Services.AddSignalR(options => {
+    options.EnableDetailedErrors = true;
+    options.MaximumReceiveMessageSize = 10 * 1024 * 1024; // 10MB Dosya desteği
 });
+builder.Services.AddCors(opt => opt.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAnyMethod().SetIsOriginAllowed(_ => true).AllowCredentials()));
 
 var app = builder.Build();
-
-// 2. Middleware Ayarları
 app.UseCors();
-app.UseRouting();
-
-// 3. Endpoint Tanımları
-app.MapHub<ChatHub>("/chatHub"); // İşte aranan endpoint burada!
-app.MapGet("/", () => "Sunucu Calisiyor! ChatHub Aktif.");
+app.MapHub<ChatHub>("/chatHub");
+app.MapGet("/", () => "Secure Server Active with History & File Support");
 
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{port}");
 
-// 4. EKSİK OLAN SINIF BURADA (Dosyanın en altına ekle)
-public class ChatHub : Hub 
-{
-    public async Task JoinRoom(string roomName) 
-    {
+public class ChatHub : Hub {
+    // Mesaj geçmişini oda bazlı tutmak için (Basit bir liste)
+    private static readonly Dictionary<string, List<ChatMessage>> _history = new();
+
+    public async Task JoinRoom(string roomName) {
         await Groups.AddToGroupAsync(Context.ConnectionId, roomName);
+        
+        // Varsa geçmiş mesajları yeni gelene gönder
+        if (_history.ContainsKey(roomName)) {
+            foreach (var msg in _history[roomName]) {
+                await Clients.Caller.SendAsync("ReceiveMessage", msg.User, msg.Msg, msg.Iv, msg.IsFile, msg.Time);
+            }
+        }
     }
 
-    public async Task SendMessage(string room, string user, string msg, string iv, bool isFile) 
-    {
-        await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, DateTime.UtcNow);
+    public async Task SendMessage(string room, string user, string msg, string iv, bool isFile) {
+        var chatMsg = new ChatMessage(user, msg, iv, isFile, DateTime.UtcNow);
+        
+        // Geçmişe ekle
+        if (!_history.ContainsKey(room)) _history[room] = new List<ChatMessage>();
+        _history[room].Add(chatMsg);
+        if (_history[room].Count > 50) _history[room].RemoveAt(0); // Son 50 mesajı tut
+
+        await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, chatMsg.Time);
     }
 }
+
+public record ChatMessage(string User, string Msg, string Iv, bool IsFile, DateTime Time);
