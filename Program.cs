@@ -8,15 +8,15 @@ var app = builder.Build();
 
 app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 
-// Bellek üzerindeki veri depoları
-var users = new ConcurrentDictionary<string, string>(); // Username, Password
-var rooms = new ConcurrentList<Room>();
-var roomAdmins = new ConcurrentDictionary<string, string>(); // RoomName, AdminUsername
-var mutedUsers = new ConcurrentHashSet<string>(); // Muted Usernames
+// Bellek üzerindeki verileri standart Thread-Safe yapılarla tutuyoruz
+var users = new ConcurrentDictionary<string, string>(); // Kullanıcı adı, Şifre
+var rooms = new ConcurrentDictionary<string, bool>(); // Oda adı, Şifreli mi?
+var roomAdmins = new ConcurrentDictionary<string, string>(); // Oda adı, Admin adı
+var mutedUsers = new ConcurrentDictionary<string, byte>(); // Susturulanlar
 
 app.MapPost("/register", (User u) => users.TryAdd(u.Username, u.Password) ? Results.Ok() : Results.BadRequest());
 app.MapPost("/login", (User u) => users.TryGetValue(u.Username, out var p) && p == u.Password ? Results.Ok() : Results.Unauthorized());
-app.MapGet("/list-rooms", () => rooms);
+app.MapGet("/list-rooms", () => rooms.Select(r => new { Name = r.Key, IsProtected = r.Value }));
 
 app.MapHub<ChatHub>("/chatHub");
 
@@ -24,42 +24,44 @@ app.Run();
 
 public class ChatHub : Hub
 {
+    // Static referanslar (Sınıfın her örneğinde aynı kalması için)
+    private static ConcurrentDictionary<string, string> RoomAdmins = new();
+    private static ConcurrentDictionary<string, byte> MutedUsers = new();
+
     public async Task JoinRoom(string roomName, string userName, bool isProtected)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, roomName);
         
         // Odayı ilk kuran admin olur
-        if (!ChatHubStatic.RoomAdmins.ContainsKey(roomName)) {
-            ChatHubStatic.RoomAdmins[roomName] = userName;
-        }
+        RoomAdmins.TryAdd(roomName, userName);
 
         await Clients.Group(roomName).SendAsync("ReceiveMessage", "SYSTEM", $"{userName} katıldı.", "", false, DateTime.Now);
     }
 
     public async Task SendMessage(string room, string user, string msg, string iv, bool isFile)
     {
-        if (ChatHubStatic.MutedUsers.Contains(user)) return; // Mute kontrolü
+        if (MutedUsers.ContainsKey(user)) return; // Mute kontrolü
         await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, DateTime.Now);
     }
 
     public async Task AdminCommand(string room, string action, string target)
     {
-        // Yetki Kontrolü: Komutu gönderen admin mi?
-        // (Gerçek projede Context.User ile doğrulanmalı, burada basitleştirildi)
-        
-        switch (action.ToUpper()) {
-            case "KICK": await Clients.All.SendAsync("ReceiveAdminAction", "KICK", target); break;
-            case "MUTE": ChatHubStatic.MutedUsers.Add(target); await Clients.All.SendAsync("ReceiveAdminAction", "MUTE", target); break;
-            case "UNMUTE": ChatHubStatic.MutedUsers.Remove(target); await Clients.All.SendAsync("ReceiveAdminAction", "UNMUTE", target); break;
+        // Admin yetki kontrolü eklenebilir
+        switch (action.ToUpper()) 
+        {
+            case "KICK": 
+                await Clients.All.SendAsync("ReceiveAdminAction", "KICK", target); 
+                break;
+            case "MUTE": 
+                MutedUsers.TryAdd(target, 0); 
+                await Clients.All.SendAsync("ReceiveAdminAction", "MUTE", target); 
+                break;
+            case "UNMUTE": 
+                MutedUsers.TryRemove(target, out _); 
+                await Clients.All.SendAsync("ReceiveAdminAction", "UNMUTE", target); 
+                break;
         }
     }
 }
 
-// Static veri saklama alanı
-public static class ChatHubStatic {
-    public static ConcurrentDictionary<string, string> RoomAdmins = new();
-    public static HashSet<string> MutedUsers = new();
-}
-
 public record User(string Username, string Password);
-public record Room(string Name, bool IsProtected);
