@@ -1,9 +1,9 @@
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
-using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// SignalR Ayarları (10MB Limit)
 builder.Services.AddSignalR(options => {
     options.EnableDetailedErrors = true;
     options.MaximumReceiveMessageSize = 10 * 1024 * 1024; 
@@ -15,8 +15,8 @@ var app = builder.Build();
 
 app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 
-// --- VERİTABANI (BELLEKTE) ---
-var users = new ConcurrentDictionary<string, string>(); 
+// --- BELLEKTEKİ VERİLER ---
+var users = new ConcurrentDictionary<string, string>(); // Kullanıcı:Şifre
 var bannedUsers = new ConcurrentBag<string>();
 
 // --- HTTP ENDPOINTLERİ ---
@@ -32,10 +32,8 @@ app.MapPost("/login", (User u) => {
     return Results.Unauthorized();
 });
 
-// BURASI DÜZELTİLDİ: Artık ChatStore içindeki odaları döndürüyor
-app.MapGet("/list-rooms", () => {
-    return ChatStore.Rooms.Select(r => new { Name = r.Key, IsProtected = r.Value });
-});
+// Oda Listeleme (ChatStore üzerinden)
+app.MapGet("/list-rooms", () => ChatStore.Rooms.Select(r => new { Name = r.Key, IsProtected = r.Value }));
 
 app.MapHub<ChatHub>("/chatHub");
 
@@ -45,29 +43,33 @@ app.Run($"http://0.0.0.0:{port}");
 // --- CHAT HUB MANTIĞI ---
 public class ChatHub : Hub
 {
-    // Client 3 parametre gönderiyor: (roomName, userName, isProtected)
+    // Odaya Katılma
     public async Task JoinRoom(string roomName, string userName, bool isProtected)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, roomName);
-        
-        // Odaları ortak Store'a ekle ki /list-rooms görebilsin
         ChatStore.Rooms[roomName] = isProtected;
-
-        Console.WriteLine($"[LOG] {userName} odaya katildi: {roomName} (Sifreli mi: {isProtected})");
+        Console.WriteLine($"[LOG] {userName} odaya katildi: {roomName}");
     }
 
+    // Mesaj Gönderme
     public async Task SendMessage(string room, string user, string msg, string iv, bool isFile)
     {
-        // Şifreli veriyi gruptakilere dağıt
+        // Mesajı odadaki herkese (gönderen dahil) zaman damgasıyla yayar
         await Clients.Group(room).SendAsync("ReceiveMessage", user, msg, iv, isFile, DateTime.Now);
+    }
+
+    // --- YENİ: GÖRÜLDÜ SİSTEMİ ---
+    public async Task MessageSeen(string room, string user)
+    {
+        // Bu metod çağrıldığında o odadaki herkese "user" isimli kişinin 
+        // mesajları okuduğu bilgisini gönderir.
+        await Clients.Group(room).SendAsync("UserSeen", user);
     }
 }
 
-// Global Depo
+// Yardımcı Depo
 public static class ChatStore {
-    // Odaların tutulduğu asıl yer burası
     public static ConcurrentDictionary<string, bool> Rooms = new();
 }
 
 public record User(string Username, string Password);
-public record RoomMeta(string Name, bool IsProtected);
