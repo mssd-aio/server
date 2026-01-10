@@ -3,18 +3,20 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. VERİTABANI BAĞLANTISI VE SSL AYARI
+// 1. VERİTABANI BAĞLANTISI VE SSL YAPILANDIRMASI
+// Render üzerinden gelen postgresql:// formatındaki linki Npgsql'in anlayacağı SSL moduna çekiyoruz.
 var rawConnString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
 
 if (string.IsNullOrEmpty(rawConnString))
 {
-    Console.WriteLine("[CRITICAL] CONNECTION_STRING NOT FOUND!");
+    Console.WriteLine("[KRITIK] CONNECTION_STRING bulunamadı! Render panelini kontrol edin.");
 }
 
-// Render Postgres SSL gerektirir, bu yüzden dizeyi düzenliyoruz
+// Render Postgres için SSL zorunludur. Linkin sonuna parametreleri ekliyoruz.
 var connString = rawConnString;
 if (!string.IsNullOrEmpty(connString) && !connString.Contains("Trust Server Certificate"))
 {
+    // Bağlantı dizesine SSL Mode=Require ve Trust Server Certificate eklenmezse Render bağlantıyı reddeder.
     connString += ";Trust Server Certificate=true;SSL Mode=Require;";
 }
 
@@ -26,18 +28,19 @@ builder.Services.AddCors();
 
 var app = builder.Build();
 
-// 2. VERİTABANINI VE TABLOLARI OTOMATİK OLUŞTUR
+// 2. VERİTABANI OLUŞTURMA (Hata Alınan Bölüm Burasıydı, Try-Catch ile Güvenli Hale Getirildi)
 using (var scope = app.Services.CreateScope())
 {
     try 
     {
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        // EnsureCreated, tablolar yoksa oluşturur. Bağlantı hatalıysa burada patlamaması için catch içinde logluyoruz.
         db.Database.EnsureCreated();
-        Console.WriteLine("[SYSTEM] Database connection successful and tables ensured.");
+        Console.WriteLine("[SISTEM] Veritabanı bağlantısı başarılı ve tablolar hazır.");
     }
     catch (Exception ex) 
     {
-        Console.WriteLine($"[ERROR] Database check failed: {ex.Message}");
+        Console.WriteLine($"[HATA] Veritabanı hazırlığı başarısız: {ex.Message}");
     }
 }
 
@@ -61,7 +64,7 @@ app.MapGet("/list-rooms", async (ChatDbContext db) => {
     return await db.Rooms.Select(r => new { Name = r.Name, IsProtected = r.IsProtected }).ToListAsync();
 });
 
-// Güncelleme için dosya indirme linki (Opsiyonel)
+// Güncelleme sistemi için EXE indirme linki
 app.MapGet("/download", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "SecureChat.exe"), "application/vnd.microsoft.portable-executable"));
 
 app.MapHub<ChatHub>("/chatHub");
@@ -69,7 +72,7 @@ app.MapHub<ChatHub>("/chatHub");
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{port}");
 
-// --- HUB MANTIĞI ---
+// --- CHAT HUB ---
 public class ChatHub : Hub
 {
     private readonly ChatDbContext _db;
@@ -109,7 +112,7 @@ public class ChatHub : Hub
     }
 }
 
-// --- VERİ MODELLERİ ---
+// --- VERİTABANI MODELLERİ ---
 public class ChatDbContext : DbContext
 {
     public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options) { }
