@@ -1,53 +1,52 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using System.ComponentModel.DataAnnotations;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- 1. VERİTABANI BAĞLANTI AYARI (Hatasız Port Çözümü) ---
+// --- 1. VERİTABANI BAĞLANTI AYARI ---
 var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-string connString = "";
+string finalConnString = "";
 
 if (!string.IsNullOrEmpty(rawUrl))
 {
     try 
     {
-        var uri = new Uri(rawUrl);
-        var userInfo = uri.UserInfo.Split(':');
-        var user = userInfo[0];
-        var password = userInfo[1];
-        var host = uri.Host;
-        var dbName = uri.AbsolutePath.Trim('/');
+        var dbUri = new Uri(rawUrl);
+        var userInfo = dbUri.UserInfo.Split(':');
+        var dbUser = userInfo[0];
+        var dbPass = userInfo[1];
+        var dbHost = dbUri.Host;
+        var dbName = dbUri.AbsolutePath.Trim('/');
         
-        // KRİTİK: Port -1 gelirse Npgsql hata verir. Elle 5432 atıyoruz.
-        var port = uri.Port <= 0 ? 5432 : uri.Port;
+        // Değişken adını 'dbPort' yaparak çakışmayı önledik
+        var dbPort = dbUri.Port <= 0 ? 5432 : dbUri.Port;
 
-        connString = $"Host={host};Port={port};Database={dbName};Username={user};Password={password};SSL Mode=Require;Trust Server Certificate=true;";
-        Console.WriteLine($"[SİSTEM] Veritabanı hedefi belirlendi: {host}:{port}");
+        finalConnString = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPass};SSL Mode=Require;Trust Server Certificate=true;";
+        Console.WriteLine($"[SİSTEM] DB Bağlantı Hedefi: {dbHost}:{dbPort}");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[HATA] Bağlantı linki işlenemedi: {ex.Message}");
+        Console.WriteLine($"[HATA] Bağlantı dizesi hatası: {ex.Message}");
     }
 }
 
 builder.Services.AddDbContext<ChatDbContext>(options =>
-    options.UseNpgsql(connString));
+    options.UseNpgsql(finalConnString));
 
 builder.Services.AddSignalR();
 builder.Services.AddCors();
 
 var app = builder.Build();
 
-// --- 2. VERİTABANI VE TABLO OLUŞTURMA ---
+// --- 2. VERİTABANI BAĞLANTISINI DOĞRULA ---
 using (var scope = app.Services.CreateScope())
 {
     try {
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        db.Database.EnsureCreated(); // Tablolar yoksa otomatik oluşturur
-        Console.WriteLine("[BAŞARILI] Veritabanı bağlantısı ve tablolar hazır.");
+        db.Database.EnsureCreated(); 
+        Console.WriteLine("[BAŞARILI] Veritabanı ve tablolar hazır.");
     } catch (Exception ex) {
-        Console.WriteLine($"[HATA] Veritabanına ulaşılamıyor: {ex.Message}");
+        Console.WriteLine($"[HATA] Veritabanı başlatılamadı: {ex.Message}");
     }
 }
 
@@ -58,28 +57,24 @@ app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin())
 app.MapPost("/register", async (User u, ChatDbContext db) => {
     try {
         if (string.IsNullOrWhiteSpace(u.Username) || string.IsNullOrWhiteSpace(u.Password))
-            return Results.BadRequest("Kullanıcı adı veya şifre boş olamaz.");
+            return Results.BadRequest("Geçersiz giriş.");
 
         if (await db.Users.AnyAsync(x => x.Username == u.Username)) 
             return Results.Conflict();
 
         db.Users.Add(u);
         await db.SaveChangesAsync();
-        Console.WriteLine($"[KAYIT] Yeni kullanıcı: {u.Username}");
+        Console.WriteLine($"[KAYIT] {u.Username} başarıyla eklendi.");
         return Results.Ok();
     } catch (Exception ex) {
-        Console.WriteLine($"[HATA] Kayıt sırasında DB hatası: {ex.Message}");
-        return Results.Problem("Sunucu veritabanı hatası.");
+        Console.WriteLine($"[HATA] Kayıt hatası: {ex.Message}");
+        return Results.Problem("DB hatası.");
     }
 });
 
 app.MapPost("/login", async (User u, ChatDbContext db) => {
     var user = await db.Users.FirstOrDefaultAsync(x => x.Username == u.Username && x.Password == u.Password);
-    if (user != null) {
-        Console.WriteLine($"[GİRİŞ] Kullanıcı bağlandı: {u.Username}");
-        return Results.Ok();
-    }
-    return Results.Unauthorized();
+    return user != null ? Results.Ok() : Results.Unauthorized();
 });
 
 app.MapGet("/list-rooms", async (ChatDbContext db) => {
@@ -88,10 +83,12 @@ app.MapGet("/list-rooms", async (ChatDbContext db) => {
 
 app.MapHub<ChatHub>("/chatHub");
 
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-app.Run($"http://0.0.0.0:{port}");
+// --- 4. SUNUCU BAŞLATMA ---
+// Burada 'webPort' ismini kullanarak yukarıdaki 'dbPort' ile çakışmasını engelledik
+var webPort = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+app.Run($"http://0.0.0.0:{webPort}");
 
-// --- 4. MODELLER VE HUB ---
+// --- 5. MODELLER VE HUB ---
 public class ChatDbContext : DbContext {
     public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options) { }
     public DbSet<User> Users { get; set; }
