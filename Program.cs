@@ -5,19 +5,19 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- 1. VERİTABANI BAĞLANTISI (KESİN VE SAĞLAM ÇÖZÜM) ---
+// --- 1. VERİTABANI BAĞLANTISI ---
 var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
 string finalConnString = "";
 
 if (string.IsNullOrWhiteSpace(rawUrl))
 {
-    finalConnString = "Data Source=chat.db"; // Yerel test için
+    finalConnString = "Data Source=chat.db"; 
 }
 else
 {
     try
     {
-        // Render URL formatı: postgres://user:pass@host:port/db
+        // Render URL'sini sağlam bir şekilde parçalıyoruz
         var uri = new Uri(rawUrl);
         var userInfo = uri.UserInfo.Split(':');
         var username = userInfo[0];
@@ -26,13 +26,12 @@ else
         var port = uri.Port > 0 ? uri.Port : 5432;
         var database = uri.AbsolutePath.Trim('/');
 
-        // PostgreSQL için SSL ve Timeout ayarları eklendi
         finalConnString = $"Host={host};Port={port};Database={database};Username={username};Password={password};Ssl Mode=Require;Trust Server Certificate=true;Command Timeout=30;";
     }
     catch (Exception ex)
     {
-        Console.WriteLine($">>> BAGLANTI PARSE HATASI: {ex.Message}");
-        finalConnString = rawUrl; // Hata olursa ham halini dene
+        Console.WriteLine($">>> BAGLANTI HATASI: {ex.Message}");
+        finalConnString = rawUrl; 
     }
 }
 
@@ -42,24 +41,24 @@ builder.Services.AddCors();
 
 var app = builder.Build();
 
-// --- 2. VERİTABANI TABLOLARINI ZORLA OLUŞTURMA ---
+// --- 2. TABLOLARI ZORLA OLUŞTURMA ---
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
     try
     {
         Console.WriteLine(">>> VERITABANI KONTROL EDILIYOR...");
-        // EnsureCreated bazen PostgreSQL'de tabloyu görmeyebilir, bu yüzden manuel kontrol ekleyelim
+        // Tabloları küçük harf isimleriyle oluşturmaya zorlar
         db.Database.EnsureCreated();
-        Console.WriteLine(">>> TABLOLAR HAZIR.");
+        Console.WriteLine(">>> VERITABANI VE TABLOLAR HAZIR.");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($">>> KRITIK DB HATASI: {ex.Message}");
+        Console.WriteLine($">>> DB HATASI: {ex.Message}");
     }
 }
 
-// --- 3. MIDDLEWARE & API ---
+// --- 3. MIDDLEWARE ---
 app.UseCors(policy => policy
     .AllowAnyHeader()
     .AllowAnyMethod()
@@ -89,7 +88,7 @@ app.MapHub<ChatHub>("/chatHub");
 var portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{portEnv}");
 
-// --- 4. MODELLER (POSTGRESQL UYUMLU KÜÇÜK HARF ZORLAMASI) ---
+// --- 4. MODELLER (KÜÇÜK HARF TABLO İSİMLERİ ZORUNLU) ---
 [Table("users")]
 public class User { 
     [Key] public int Id { get; set; } 
@@ -135,12 +134,11 @@ public class ChatHub : Hub {
                 _db.Rooms.Add(new RoomMeta { Name = r, IsProtected = p });
                 await _db.SaveChangesAsync();
             }
-            // Geçmiş mesajlar
             var logs = await _db.Messages.Where(m => m.Room == r).OrderBy(m => m.Time).Take(50).ToListAsync();
             foreach (var log in logs) {
                 await Clients.Caller.SendAsync("ReceiveMessage", log.User, log.Msg, log.Iv, log.IsFile, log.Time);
             }
-        } catch (Exception ex) { Console.WriteLine($"Join Error: {ex.Message}"); }
+        } catch { }
     }
 
     public async Task SendMessage(string r, string u, string m, string i, bool f) {
@@ -149,6 +147,6 @@ public class ChatHub : Hub {
             _db.Messages.Add(new MsgModel { Room = r, User = u, Msg = m, Iv = i, IsFile = f, Time = t });
             await _db.SaveChangesAsync();
             await Clients.Group(r).SendAsync("ReceiveMessage", u, m, i, f, t);
-        } catch (Exception ex) { Console.WriteLine($"Send Error: {ex.Message}"); }
+        } catch { }
     }
 }
