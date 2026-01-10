@@ -1,98 +1,79 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
-using Npgsql; // Npgsql paketinin yüklü oldugundan emin ol
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- 1. VERİTABANI BAĞLANTISI (KESİN PORT DÜZELTMESİ) ---
-var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING")?.Trim();
+// --- 1. VERİTABANI BAĞLANTISI (KESİN VE SAĞLAM ÇÖZÜM) ---
+var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
 string finalConnString = "";
 
 Console.WriteLine(">>> BAGLANTI AYARLANIYOR...");
 
-if (string.IsNullOrEmpty(rawUrl))
+if (string.IsNullOrWhiteSpace(rawUrl))
 {
-    Console.WriteLine(">>> HATA: CONNECTION_STRING bos! Render Environment Variables kismini kontrol et.");
+    Console.WriteLine(">>> HATA: CONNECTION_STRING bulunamadi!");
 }
 else
 {
     try
     {
-        // Render'in verdigi postgres:// formatini parse ediyoruz
+        // Render URL'sini parse ediyoruz: postgres://user:pass@host:port/db
         var uri = new Uri(rawUrl);
         
-        // Sifre icinde ':' olabilir, bu yuzden sadece ilk ':' isaretinden boluyoruz
-        var userInfo = uri.UserInfo.Split(new[] { ':' }, 2);
+        var userInfo = uri.UserInfo.Split(':');
         var username = userInfo.Length > 0 ? userInfo[0] : "";
         var password = userInfo.Length > 1 ? userInfo[1] : "";
         
-        // HATA DUZELTME BURADA: Port -1 gelirse 5432 yapiyoruz
+        // HATA DUZELTME: Eger Uri portu okuyamazsa (-1 donerse) varsayilan 5432'yi kullaniyoruz.
         var port = uri.Port > 0 ? uri.Port : 5432;
+        var database = uri.AbsolutePath.Trim('/');
+        var host = uri.Host;
 
-        var connBuilder = new NpgsqlConnectionStringBuilder
-        {
-            Host = uri.Host,
-            Port = port,
-            Username = username,
-            Password = password,
-            Database = uri.AbsolutePath.Trim('/'),
-            SslMode = SslMode.Require,
-            TrustServerCertificate = true
-        };
-
-        finalConnString = connBuilder.ToString();
-        Console.WriteLine($">>> URL PARSE EDILDI. Host: {uri.Host}, Port: {port}");
+        // Manuel string olusturuyoruz (Builder hatalarindan kaçinmak için)
+        finalConnString = $"Host={host};Port={port};Database={database};Username={username};Password={password};Ssl Mode=Require;Trust Server Certificate=true;Command Timeout=30;";
+        
+        Console.WriteLine($">>> URL PARSE EDILDI. Host: {host}, Port: {port}");
     }
     catch (Exception ex)
     {
         Console.WriteLine($">>> URL PARSE HATASI: {ex.Message}");
-        // Hata durumunda bile ham URL'yi deneme, format yanlis oldugu icin patlar.
-        // O yuzden finalConnString bos kalir ve asagida log duser.
+        // Parse edemezsek ham haliyle son sans deneriz (bazen ise yarar)
+        finalConnString = rawUrl;
     }
 }
 
-// DbContext Ekleme
-if (string.IsNullOrEmpty(finalConnString))
-{
-    // Hata durumunda uygulama cokmemesi icin hafiza ici db aciyoruz (Gecici cozum)
-    Console.WriteLine(">>> UYARI: Gecerli baglanti dizesi olusturulamadi. In-Memory DB kullanilacak (Veriler kaybolur).");
-    builder.Services.AddDbContext<ChatDbContext>(options => options.UseInMemoryDatabase("TempDb"));
-}
-else
-{
-    builder.Services.AddDbContext<ChatDbContext>(options => options.UseNpgsql(finalConnString));
-}
+// Sadece PostgreSQL kullaniyoruz, In-Memory sildik (Hata kaynagiydi)
+builder.Services.AddDbContext<ChatDbContext>(options => options.UseNpgsql(finalConnString));
 
 builder.Services.AddSignalR();
 builder.Services.AddCors();
 
 var app = builder.Build();
 
-// --- 2. VERİTABANI BAĞLANTI TESTİ ---
+// --- 2. VERİTABANI TEST VE TABLO OLUSTURMA ---
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
     try
     {
-        if (!string.IsNullOrEmpty(finalConnString))
-        {
-            Console.WriteLine(">>> VERITABANI BAGLANTISI DENENIYOR...");
-            db.Database.OpenConnection(); // Baglantiyi test et
-            db.Database.EnsureCreated();  // Tablolari olustur
-            Console.WriteLine(">>> VERITABANI BAGLANTISI BASARILI <<<");
-        }
+        Console.WriteLine(">>> VERITABANINA BAGLANILIYOR...");
+        // Veritabani yoksa olustur, varsa tablolari kontrol et
+        db.Database.EnsureCreated();  
+        Console.WriteLine(">>> VERITABANI BAGLANTISI VE TABLOLAR HAZIR <<<");
     }
     catch (Exception ex)
     {
+        // Burasi cok kritik, hatayi terminale basiyoruz
         Console.WriteLine("**************************************************");
         Console.WriteLine($">>> KRITIK VERITABANI HATASI: {ex.Message}");
+        if(ex.InnerException != null) Console.WriteLine($">>> DETAY: {ex.InnerException.Message}");
         Console.WriteLine("**************************************************");
-        // Hata olsa bile devam et ki loglari okuyabilelim
     }
 }
 
-// --- 3. MIDDLEWARE AYARLARI ---
+// --- 3. MIDDLEWARE ---
 app.UseCors(policy => policy
     .AllowAnyHeader()
     .AllowAnyMethod()
