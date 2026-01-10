@@ -1,14 +1,14 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
+using System.ComponentModel.DataAnnotations;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- BAĞLANTI DİZESİ DÜZELTİCİ (PORT HATASI İÇİN) ---
+// --- 1. VERİTABANI BAĞLANTI AYARI (Hatasız Port Çözümü) ---
 var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
 string connString = "";
 
-if (!string.IsNullOrEmpty(rawUrl) && rawUrl.StartsWith("postgres"))
+if (!string.IsNullOrEmpty(rawUrl))
 {
     try 
     {
@@ -17,17 +17,17 @@ if (!string.IsNullOrEmpty(rawUrl) && rawUrl.StartsWith("postgres"))
         var user = userInfo[0];
         var password = userInfo[1];
         var host = uri.Host;
-        var database = uri.AbsolutePath.Trim('/');
+        var dbName = uri.AbsolutePath.Trim('/');
         
-        // Eğer port -1 gelirse default 5432 kullanıyoruz
+        // KRİTİK: Port -1 gelirse Npgsql hata verir. Elle 5432 atıyoruz.
         var port = uri.Port <= 0 ? 5432 : uri.Port;
 
-        connString = $"Host={host};Port={port};Database={database};Username={user};Password={password};SSL Mode=Require;Trust Server Certificate=true;";
-        Console.WriteLine($"[SISTEM] Baglanti kuruluyor: {host}:{port}");
+        connString = $"Host={host};Port={port};Database={dbName};Username={user};Password={password};SSL Mode=Require;Trust Server Certificate=true;";
+        Console.WriteLine($"[SİSTEM] Veritabanı hedefi belirlendi: {host}:{port}");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[KRITIK] Link parcalama hatasi: {ex.Message}");
+        Console.WriteLine($"[HATA] Bağlantı linki işlenemedi: {ex.Message}");
     }
 }
 
@@ -39,35 +39,47 @@ builder.Services.AddCors();
 
 var app = builder.Build();
 
-// Veritabanını zorla oluştur (Tabloların gelmesi için)
+// --- 2. VERİTABANI VE TABLO OLUŞTURMA ---
 using (var scope = app.Services.CreateScope())
 {
     try {
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        db.Database.EnsureCreated();
-        Console.WriteLine("[SISTEM] Veritabanı baglantisi ve tablolar OK.");
+        db.Database.EnsureCreated(); // Tablolar yoksa otomatik oluşturur
+        Console.WriteLine("[BAŞARILI] Veritabanı bağlantısı ve tablolar hazır.");
     } catch (Exception ex) {
-        Console.WriteLine($"[HATA] DB Olusturulamadi: {ex.Message}");
+        Console.WriteLine($"[HATA] Veritabanına ulaşılamıyor: {ex.Message}");
     }
 }
 
 app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 
-// Kayıt ve Giriş API'leri
+// --- 3. API ENDPOINTLERİ ---
+
 app.MapPost("/register", async (User u, ChatDbContext db) => {
     try {
-        if (await db.Users.AnyAsync(x => x.Username == u.Username)) return Results.Conflict();
+        if (string.IsNullOrWhiteSpace(u.Username) || string.IsNullOrWhiteSpace(u.Password))
+            return Results.BadRequest("Kullanıcı adı veya şifre boş olamaz.");
+
+        if (await db.Users.AnyAsync(x => x.Username == u.Username)) 
+            return Results.Conflict();
+
         db.Users.Add(u);
         await db.SaveChangesAsync();
+        Console.WriteLine($"[KAYIT] Yeni kullanıcı: {u.Username}");
         return Results.Ok();
     } catch (Exception ex) {
-        return Results.Problem("Kayit sirasinda DB hatasi: " + ex.Message);
+        Console.WriteLine($"[HATA] Kayıt sırasında DB hatası: {ex.Message}");
+        return Results.Problem("Sunucu veritabanı hatası.");
     }
 });
 
 app.MapPost("/login", async (User u, ChatDbContext db) => {
     var user = await db.Users.FirstOrDefaultAsync(x => x.Username == u.Username && x.Password == u.Password);
-    return user != null ? Results.Ok() : Results.Unauthorized();
+    if (user != null) {
+        Console.WriteLine($"[GİRİŞ] Kullanıcı bağlandı: {u.Username}");
+        return Results.Ok();
+    }
+    return Results.Unauthorized();
 });
 
 app.MapGet("/list-rooms", async (ChatDbContext db) => {
@@ -76,10 +88,10 @@ app.MapGet("/list-rooms", async (ChatDbContext db) => {
 
 app.MapHub<ChatHub>("/chatHub");
 
-var portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-app.Run($"http://0.0.0.0:{portEnv}");
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+app.Run($"http://0.0.0.0:{port}");
 
-// Modeller
+// --- 4. MODELLER VE HUB ---
 public class ChatDbContext : DbContext {
     public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options) { }
     public DbSet<User> Users { get; set; }
