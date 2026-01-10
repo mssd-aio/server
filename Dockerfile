@@ -1,14 +1,18 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /app
 
-# Dosyaları kopyala ve restore et
+# Sadece proje dosyasını kopyalayıp paketleri çekiyoruz
+COPY *.csproj ./
+RUN dotnet restore
+
+# Kalan tüm dosyaları kopyalıyoruz
 COPY . .
-RUN dotnet restore "SecureChatServer.csproj"
 
-# Yayınla
-RUN dotnet publish "SecureChatServer.csproj" -c Release -o out
+# Bin ve obj klasörlerini temizleyip öyle yayınlıyoruz (Kritik adım)
+RUN rm -rf bin obj
+RUN dotnet publish -c Release -o out
 
-# Çalışma zamanı imajı
+# Runtime aşaması
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=build /app/out .
