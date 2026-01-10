@@ -1,20 +1,23 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Npgsql; // Bunu eklemeyi unutmayın
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. BAĞLANTI AYARI
-var rawConnString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
+// --- BAĞLANTI DİZESİ DÖNÜŞTÜRÜCÜ ---
+var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
+string connString = "";
 
-if (string.IsNullOrEmpty(rawConnString))
+if (!string.IsNullOrEmpty(rawUrl) && rawUrl.StartsWith("postgres"))
 {
-    Console.WriteLine("[KRITIK] CONNECTION_STRING Bulunamadi!");
+    // postgresql://user:pass@host:port/db -> Npgsql formatına çevir
+    var uri = new Uri(rawUrl);
+    var userInfo = uri.UserInfo.Split(':');
+    connString = $"Host={uri.Host};Database={uri.AbsolutePath.Trim('/')};Username={userInfo[0]};Password={userInfo[1]};Port={uri.Port};SSL Mode=Require;Trust Server Certificate=true;";
 }
-
-var connString = rawConnString;
-if (!string.IsNullOrEmpty(connString) && !connString.Contains("Trust Server Certificate"))
+else
 {
-    connString += ";Trust Server Certificate=true;SSL Mode=Require;";
+    connString = rawUrl ?? "";
 }
 
 builder.Services.AddDbContext<ChatDbContext>(options =>
@@ -25,24 +28,24 @@ builder.Services.AddCors();
 
 var app = builder.Build();
 
-// 2. VERITABANI HAZIRLIGI
+// Veritabanı Hazırlığı
 using (var scope = app.Services.CreateScope())
 {
     try 
     {
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
         db.Database.EnsureCreated();
-        Console.WriteLine("[SISTEM] Veritabani baglantisi basarili.");
+        Console.WriteLine("[SISTEM] Veritabani baglantisi ve tablolar OK.");
     }
     catch (Exception ex) 
     {
-        Console.WriteLine($"[HATA] Veritabani hatasi: {ex.Message}");
+        Console.WriteLine($"[HATA] Veritabani Hatasi: {ex.Message}");
     }
 }
 
 app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 
-// API'ler
+// API Endpoints
 app.MapPost("/register", async (User u, ChatDbContext db) => {
     if (await db.Users.AnyAsync(x => x.Username == u.Username)) return Results.Conflict();
     db.Users.Add(u);
@@ -64,7 +67,7 @@ app.MapHub<ChatHub>("/chatHub");
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{port}");
 
-// MODELLER VE HUB
+// Modeller ve Hub (Önceki kodla aynı kalabilir)
 public class ChatHub : Hub {
     private readonly ChatDbContext _db;
     public ChatHub(ChatDbContext db) => _db = db;
