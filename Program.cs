@@ -1,23 +1,34 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using Npgsql; // Bunu eklemeyi unutmayın
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- BAĞLANTI DİZESİ DÖNÜŞTÜRÜCÜ ---
+// --- BAĞLANTI DİZESİ DÜZELTİCİ (PORT HATASI İÇİN) ---
 var rawUrl = Environment.GetEnvironmentVariable("CONNECTION_STRING");
 string connString = "";
 
 if (!string.IsNullOrEmpty(rawUrl) && rawUrl.StartsWith("postgres"))
 {
-    // postgresql://user:pass@host:port/db -> Npgsql formatına çevir
-    var uri = new Uri(rawUrl);
-    var userInfo = uri.UserInfo.Split(':');
-    connString = $"Host={uri.Host};Database={uri.AbsolutePath.Trim('/')};Username={userInfo[0]};Password={userInfo[1]};Port={uri.Port};SSL Mode=Require;Trust Server Certificate=true;";
-}
-else
-{
-    connString = rawUrl ?? "";
+    try 
+    {
+        var uri = new Uri(rawUrl);
+        var userInfo = uri.UserInfo.Split(':');
+        var user = userInfo[0];
+        var password = userInfo[1];
+        var host = uri.Host;
+        var database = uri.AbsolutePath.Trim('/');
+        
+        // Eğer port -1 gelirse default 5432 kullanıyoruz
+        var port = uri.Port <= 0 ? 5432 : uri.Port;
+
+        connString = $"Host={host};Port={port};Database={database};Username={user};Password={password};SSL Mode=Require;Trust Server Certificate=true;";
+        Console.WriteLine($"[SISTEM] Baglanti kuruluyor: {host}:{port}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[KRITIK] Link parcalama hatasi: {ex.Message}");
+    }
 }
 
 builder.Services.AddDbContext<ChatDbContext>(options =>
@@ -28,29 +39,30 @@ builder.Services.AddCors();
 
 var app = builder.Build();
 
-// Veritabanı Hazırlığı
+// Veritabanını zorla oluştur (Tabloların gelmesi için)
 using (var scope = app.Services.CreateScope())
 {
-    try 
-    {
+    try {
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
         db.Database.EnsureCreated();
-        Console.WriteLine("[SISTEM] Veritabani baglantisi ve tablolar OK.");
-    }
-    catch (Exception ex) 
-    {
-        Console.WriteLine($"[HATA] Veritabani Hatasi: {ex.Message}");
+        Console.WriteLine("[SISTEM] Veritabanı baglantisi ve tablolar OK.");
+    } catch (Exception ex) {
+        Console.WriteLine($"[HATA] DB Olusturulamadi: {ex.Message}");
     }
 }
 
 app.UseCors(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 
-// API Endpoints
+// Kayıt ve Giriş API'leri
 app.MapPost("/register", async (User u, ChatDbContext db) => {
-    if (await db.Users.AnyAsync(x => x.Username == u.Username)) return Results.Conflict();
-    db.Users.Add(u);
-    await db.SaveChangesAsync();
-    return Results.Ok();
+    try {
+        if (await db.Users.AnyAsync(x => x.Username == u.Username)) return Results.Conflict();
+        db.Users.Add(u);
+        await db.SaveChangesAsync();
+        return Results.Ok();
+    } catch (Exception ex) {
+        return Results.Problem("Kayit sirasinda DB hatasi: " + ex.Message);
+    }
 });
 
 app.MapPost("/login", async (User u, ChatDbContext db) => {
@@ -64,10 +76,21 @@ app.MapGet("/list-rooms", async (ChatDbContext db) => {
 
 app.MapHub<ChatHub>("/chatHub");
 
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-app.Run($"http://0.0.0.0:{port}");
+var portEnv = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+app.Run($"http://0.0.0.0:{portEnv}");
 
-// Modeller ve Hub (Önceki kodla aynı kalabilir)
+// Modeller
+public class ChatDbContext : DbContext {
+    public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options) { }
+    public DbSet<User> Users { get; set; }
+    public DbSet<RoomMeta> Rooms { get; set; }
+    public DbSet<MsgModel> Messages { get; set; }
+}
+
+public class User { public int Id { get; set; } public string Username { get; set; } = ""; public string Password { get; set; } = ""; }
+public class RoomMeta { public int Id { get; set; } public string Name { get; set; } = ""; public bool IsProtected { get; set; } }
+public class MsgModel { public int Id { get; set; } public string Room { get; set; } = ""; public string User { get; set; } = ""; public string Msg { get; set; } = ""; public string Iv { get; set; } = ""; public bool IsFile { get; set; } public DateTime Time { get; set; } }
+
 public class ChatHub : Hub {
     private readonly ChatDbContext _db;
     public ChatHub(ChatDbContext db) => _db = db;
@@ -87,14 +110,3 @@ public class ChatHub : Hub {
         await Clients.Group(r).SendAsync("ReceiveMessage", u, m, i, f, t);
     }
 }
-
-public class ChatDbContext : DbContext {
-    public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options) { }
-    public DbSet<User> Users { get; set; }
-    public DbSet<RoomMeta> Rooms { get; set; }
-    public DbSet<MsgModel> Messages { get; set; }
-}
-
-public class User { public int Id { get; set; } public string Username { get; set; } = ""; public string Password { get; set; } = ""; }
-public class RoomMeta { public int Id { get; set; } public string Name { get; set; } = ""; public bool IsProtected { get; set; } }
-public class MsgModel { public int Id { get; set; } public string Room { get; set; } = ""; public string User { get; set; } = ""; public string Msg { get; set; } = ""; public string Iv { get; set; } = ""; public bool IsFile { get; set; } public DateTime Time { get; set; } }
